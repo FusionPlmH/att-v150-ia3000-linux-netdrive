@@ -208,6 +208,7 @@ Uninstall: `sudo ./install.sh --uninstall` (keeps `/etc/default/v150-switch`).
 |---|---|
 | [docs/REGISTER-REFERENCE.md](docs/REGISTER-REFERENCE.md) | you need the 88E6190X register / bit-field reference (bilingual) |
 | [docs/TECHNICAL-NOTES.md](docs/TECHNICAL-NOTES.md) | you want the dead ends and why they were dead ends (bilingual) |
+| [docs/BACKPLANE-2.5G.md](docs/BACKPLANE-2.5G.md) | why the 2.5G backplane never comes up — evidence chain, vendor datasheet cross-check, four on-hardware experiments (Chinese) |
 | "Why not DSA" / "How it works" below | you intend to change the code or port it to another board |
 
 ---
@@ -775,6 +776,7 @@ docs/
   REGISTER-REFERENCE.en.md    same, English
   TECHNICAL-NOTES.md          what was tried, what failed, and why (Chinese)
   TECHNICAL-NOTES.en.md       same, English
+  BACKPLANE-2.5G.md           full investigation of the dead 2.5G backplane (Chinese)
 ```
 
 ---

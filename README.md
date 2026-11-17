@@ -204,6 +204,7 @@ sleep 8
 |---|---|
 | [docs/REGISTER-REFERENCE.md](docs/REGISTER-REFERENCE.md) | 88E6190X 的寄存器 / 位域速查（中英双语） |
 | [docs/TECHNICAL-NOTES.md](docs/TECHNICAL-NOTES.md) | 走过的弯路和原因（中英双语） |
+| [docs/BACKPLANE-2.5G.md](docs/BACKPLANE-2.5G.md) | 2.5G 背板为什么起不来 —— 完整证据链、原厂手册对照、四次真机实验（中文） |
 | 本文下面的"为什么不用 DSA"/"工作原理" | 想改代码或换机器时看 |
 
 ---
@@ -753,6 +754,7 @@ docs/
   REGISTER-REFERENCE.en.md    同上，英文
   TECHNICAL-NOTES.md          走过的弯路和原因（中文）
   TECHNICAL-NOTES.en.md       同上，英文
+  BACKPLANE-2.5G.md           2.5G 背板起不来的完整调查（中文）
 ```
 
 ---
