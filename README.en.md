@@ -232,6 +232,33 @@ sudo ./scripts/v150-status.sh
 Prints the module parameter, chip ID, uplink carrier/speed, all ten switch ports
 (link, speed, CMODE, PVID) and the state of the eight host VLAN interfaces.
 
+### Where the netdev names come from
+
+`install.sh` finds the two X553 uplinks by PCI device ID `8086:15c2` and writes
+the result to `/etc/default/v150-switch`:
+
+```sh
+V150_CPU_IF0=enp5s0f0     # switch port 10
+V150_CPU_IF1=enp5s0f1     # switch port  9
+```
+
+Every script (`v150-switch-bringup.sh` / `v150-vlans.sh` / `v150-status.sh` /
+`vlan_mon.sh`) resolves them in this order:
+
+```
+environment variable  >  /etc/default/v150-switch  >  built-in enp5s0f0/enp5s0f1
+```
+
+So if a kernel upgrade renames the interfaces, just re-run `sudo ./install.sh` —
+no script edits needed. To try other names ad hoc:
+
+```sh
+sudo V150_CPU_IF0=eno1 V150_CPU_IF1=eno2 ./scripts/v150-status.sh
+```
+
+> The built-in defaults `enp5s0f0` / `enp5s0f1` are PCI `05:00.0` / `05:00.1`.
+> Those bus addresses are fixed on the IA3000; only the kernel naming scheme varies.
+
 ### VyOS
 
 VyOS rewrites `/usr` and `/etc` on image upgrade but keeps `/config`, so there is

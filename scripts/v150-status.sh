@@ -8,6 +8,15 @@
 set -u
 
 P=/proc/v150_mdio
+
+# 网口名优先级：环境变量 > install.sh 写的 /etc/default/v150-switch > 内置默认
+_e0=${V150_CPU_IF0:-}
+_e1=${V150_CPU_IF1:-}
+# shellcheck source=/dev/null
+[ -r /etc/default/v150-switch ] && . /etc/default/v150-switch
+[ -n "$_e0" ] && V150_CPU_IF0=$_e0
+[ -n "$_e1" ] && V150_CPU_IF1=$_e1
+
 CPU_IF0=${V150_CPU_IF0:-enp5s0f0}
 CPU_IF1=${V150_CPU_IF1:-enp5s0f1}
 SMI=16

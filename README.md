@@ -227,6 +227,33 @@ sudo ./scripts/v150-status.sh
 会打印模块参数、芯片 ID、两个上行的 carrier/speed、10 个 switch port 的
 链路/速率/CMODE/PVID，以及主机侧 8 个 VLAN 接口的状态。
 
+### 网口名从哪来
+
+`install.sh` 按 PCI 设备 ID `8086:15c2` 自动认出两个 X553 上行，
+把结果写进 `/etc/default/v150-switch`：
+
+```sh
+V150_CPU_IF0=enp5s0f0     # switch port 10
+V150_CPU_IF1=enp5s0f1     # switch port  9
+```
+
+所有脚本（`v150-switch-bringup.sh` / `v150-vlans.sh` / `v150-status.sh` /
+`vlan_mon.sh`）都按这个顺序取值：
+
+```
+命令行环境变量  >  /etc/default/v150-switch  >  内置默认 enp5s0f0/enp5s0f1
+```
+
+所以内核升级后网口改名了，只要重跑一次 `sudo ./install.sh` 就行，不用改脚本。
+临时试别的名字：
+
+```sh
+sudo V150_CPU_IF0=eno1 V150_CPU_IF1=eno2 ./scripts/v150-status.sh
+```
+
+> 内置默认 `enp5s0f0` / `enp5s0f1` 对应 PCI `05:00.0` / `05:00.1`。
+> 在 IA3000 上这两个地址是固定的，变的是内核的命名规则。
+
 ### VyOS
 
 VyOS 会把 `/usr` 和 `/etc` 在镜像升级时重写，而 `/config` 保留，

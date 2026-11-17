@@ -13,6 +13,15 @@
 
 set -eu
 
+# 网口名优先级：命令行环境变量 > install.sh 写的 /etc/default/v150-switch > 内置默认。
+# 内置默认是 IA3000 在常见内核下的名字；探测结果不同的机器靠上面两级纠正。
+_e0=${V150_CPU_IF0:-}
+_e1=${V150_CPU_IF1:-}
+# shellcheck source=/dev/null
+[ -r /etc/default/v150-switch ] && . /etc/default/v150-switch
+[ -n "$_e0" ] && V150_CPU_IF0=$_e0
+[ -n "$_e1" ] && V150_CPU_IF1=$_e1
+
 CPU_IF0=${V150_CPU_IF0:-enp5s0f0}
 CPU_IF1=${V150_CPU_IF1:-enp5s0f1}
 VLANS=${V150_VLANS:-1 2 3 4 5 6 7 8}
