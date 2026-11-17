@@ -1,0 +1,23 @@
+# build output
+*.o
+*.ko
+*.mod
+*.mod.c
+*.symvers
+*.order
+.tmp_versions/
+modules.order
+Module.symvers
+
+# editor / OS
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# python
+__pycache__/
+*.pyc
+
+# local notes
+*.local.md

@@ -1,0 +1,21 @@
+[Unit]
+Description=V150 Marvell 88E6190X switch bring-up (8 front-panel ports + X553 uplinks)
+Documentation=file:/usr/share/doc/v150-netdrive/README.md
+# ixgbe must already be bound, otherwise v150_mdio cannot find the MDIO bus that
+# ixgbe registers. Use network.target, not network-pre.target: at the latter
+# point udev has not enumerated PCI yet and ixgbe has not probed.
+After=network.target
+Wants=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=-/etc/default/v150-switch
+ExecStart=/usr/local/sbin/v150-switch-bringup.sh
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=180
+StandardOutput=journal+console
+
+[Install]
+WantedBy=multi-user.target
