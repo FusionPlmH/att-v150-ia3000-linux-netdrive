@@ -12,23 +12,190 @@
 
 ---
 
-## 目录
+## 你会得到什么
 
-- [为什么不用 DSA](#为什么不用-dsa)
-- [硬件](#硬件)
-- [工作原理](#工作原理)
-- [依赖](#依赖)
-- [安装](#安装)
-- [端口映射](#端口映射)
-- [VLAN 规划](#vlan-规划)
-- [五件必须做对的事](#五件必须做对的事)
-- [SFP 笼子必须显式给 SerDes 上电](#sfp-笼子必须显式给-serdes-上电)
-- [实测数据](#实测数据)
-- [排错](#排错)
-- [已知限制](#已知限制)
-- [仓库结构](#仓库结构)
-- [参考资料](#参考资料)
-- [许可](#许可)
+8 个前面板口全部可用，每个口对应一个独立的 VLAN 子接口：
+
+```
+$ sudo v150-status.sh
+----- module -----
+  /proc/v150_mdio       present
+  switch id             0x0a01  88E6190X rev 1 ok     ← 芯片接通了
+
+----- uplinks -----
+  enp5s0f0     switch port 10   carrier=1 speed=1000
+  enp5s0f1     switch port  9   carrier=1 speed=1000
+
+----- switch ports -----
+  PORT   LNK  SPEED  CMODE  PVID
+  1      0    -      0xf    4      ← 面板 4，没插线
+  3      1    1G     0x9    1      ← 面板 1，SFP 有模块
+  9      1    1G     0x9    100    ← CPU 上行
+  ...
+```
+
+给 `enp5s0f1.3` 配个 IP，面板 3 就能用了 —— 8 个口默认互相隔离（一口一 VLAN）。
+
+---
+
+## 第 0 步：确认机器对得上
+
+**这个仓库只对一种机器有效。** 先花 30 秒确认，对不上就别往下走 ——
+下面每个端口映射、每个寄存器时序都是在这一台机器上实测出来的。
+
+```sh
+lspci -nn | grep -i 15c2
+```
+
+必须看到**两个** `8086:15c2`（X553 Backplane）：
+
+```
+05:00.0 Ethernet controller: Intel Corporation Ethernet Connection X553 Backplane [8086:15c2]
+05:00.1 Ethernet controller: Intel Corporation Ethernet Connection X553 Backplane [8086:15c2]
+```
+
+```sh
+cat /sys/class/dmi/id/product_name
+```
+
+应该是 `80500-0150-G02`（Silicom IA3000 / AT&T ATT-V150）。
+
+**还需要：**
+
+| 项 | 要求 | 自己检查 |
+|---|---|---|
+| 系统 | x86_64，Debian 12+ 或 Proxmox VE 8/9 | `cat /etc/os-release` |
+| 内核头文件 | 匹配当前运行内核 | `test -e /lib/modules/$(uname -r)/build && echo ok` |
+| 权限 | root | `id -u` 输出 `0` |
+| 管理网络 | **不能**走要被接管的这 8 个口 | — |
+
+头文件缺失：
+
+```sh
+apt install pve-headers-$(uname -r)      # Proxmox VE
+apt install linux-headers-$(uname -r)    # Debian
+```
+
+VyOS 用 [vyos/setup.sh](#vyos)，不要用 `install.sh`。
+
+---
+
+## 三步点亮
+
+### 第 1 步：装
+
+```sh
+git clone https://github.com/FusionPlmH/att-v150-ia3000-linux-netdrive
+cd att-v150-ia3000-linux-netdrive
+sudo ./install.sh
+```
+
+不想克隆：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/FusionPlmH/att-v150-ia3000-linux-netdrive/main/get.sh | sudo bash
+```
+
+想先看它打算干什么：加 `--dry-run`。
+
+**它做的事**：
+
+| 步骤 | 说明 |
+|---|---|
+| 识别发行版 | Proxmox VE / Debian / VyOS |
+| 检查内核头文件 | 缺的话尝试 `pve-headers-$(uname -r)` / `linux-headers-$(uname -r)` |
+| **自动识别两个 X553 上行** | 按 PCI 设备 ID `8086:15c2` 找，按功能号判断哪个是 switch port 9 / 10 |
+| 编译模块 | 直接编译，或 `--dkms` 走 DKMS |
+| 安装模块 + modprobe 配置 | `/lib/modules/$(uname -r)/extra/`、`/etc/modprobe.d/v150_mdio.conf` |
+| 装载并验证芯片 | 读 `0x0a01` 确认是 88E6190X |
+| 安装 bring-up 与服务 | `/usr/local/sbin/`、`/etc/systemd/system/`，开机自启 |
+| 创建主机侧 VLAN 接口 | `enp5s0f1.1` … `enp5s0f0.8`，**只建不配地址** |
+
+**装完应该看到**（最后几行）：
+
+```
+   + systemctl restart v150-switch.service
+● v150-switch.service
+     Active: active (exited)
+```
+
+以及前面的 `chip id` 那行是 `0x0a01  (88E6190X) OK`。
+**芯片 ID 读不出来**说明模块没接上 MDIO —— 看 [装不上怎么办](#装不上怎么办)。
+
+### 第 2 步：确认 8 个口都在
+
+```sh
+sudo v150-status.sh
+```
+
+看 `switch ports` 表，8 个前面板口的 `PVID` 必须是 `1`~`8`（面板号 = VLAN）：
+
+```
+  PORT   LNK  SPEED  CMODE  PVID
+  1      0    -      0xf    4      ← 面板 4
+  2      0    -      0xf    3      ← 面板 3
+  3      1    1G     0x9    1      ← 面板 1（SFP）
+  4      0    -      0xf    2      ← 面板 2（SFP）
+```
+
+`LNK=0` 不是错误 —— 没插线就是 0。面板 1/2 是 SFP，没插模块时 `CMODE=0xf` 也正常。
+
+### 第 3 步：插一根线验证
+
+把网线插到**面板 3**（电口），对端接另一台机器：
+
+```sh
+# 面板 3 -> VLAN 3 -> enp5s0f1.3（对照见"端口映射"）
+sudo ip addr add 192.168.50.1/24 dev enp5s0f1.3
+sudo ip link set enp5s0f1.3 up
+
+# 对端机器配 192.168.50.2/24，然后
+ping -c 3 192.168.50.2
+```
+
+**通了就成功了** —— 面板 → 交换芯片 → VLAN → 上行 → 主机，整条链路都对。
+换别的面板同理，VLAN 号 = 面板号。
+
+**不知道线插在哪个面板？** 不配 IP 也能确认，看哪个子接口在收包：
+
+```sh
+for i in enp5s0f1.{1,3,4,5} enp5s0f0.{2,6,7,8}; do
+  printf '%-16s %s\n' "$i" "$(cat /sys/class/net/$i/statistics/rx_packets 2>/dev/null || echo -)"
+done
+sleep 8
+# 再跑一次，数字涨了的那个就是
+```
+
+（在仓库目录里的话，`sudo ./tools/vlan_mon.sh 8` 会自动做这件事并标出活跃的接口。）
+
+> ⚠️ 不要用 `tcpdump -i enp5s0f0` 判断有没有 tag —— `ixgbe` 会把 VLAN tag
+> 剥进描述符，抓包看不到。只看 VLAN 子接口的 `rx_packets`。
+
+---
+
+## 装完之后
+
+三个命令都进了 PATH：
+
+| 命令 | 作用 |
+|---|---|
+| `sudo v150-status.sh` | 只读健康报告，任何时候都能跑 |
+| `sudo v150-vlans.sh create\|delete\|show` | 建 / 删 / 看主机侧 8 个 VLAN 子接口 |
+| `sudo v150-switch-bringup.sh` | 重新给交换芯片编程（开机由 systemd 自动跑） |
+
+配置在 `/etc/default/v150-switch`。内核升级导致网口改名时，重跑 `sudo ./install.sh` 就行。
+
+卸载：`sudo ./install.sh --uninstall`（保留 `/etc/default/v150-switch`）
+
+---
+
+## 详细文档
+
+| 文档 | 看它做什么 |
+|---|---|
+| [docs/REGISTER-REFERENCE.md](docs/REGISTER-REFERENCE.md) | 88E6190X 的寄存器 / 位域速查（中英双语） |
+| [docs/TECHNICAL-NOTES.md](docs/TECHNICAL-NOTES.md) | 走过的弯路和原因（中英双语） |
+| 本文下面的"为什么不用 DSA"/"工作原理" | 想改代码或换机器时看 |
 
 ---
 
@@ -150,55 +317,12 @@ w <smi> <reg> <value>  -> "ok"
 
 ---
 
-## 依赖
+## 安装细节
 
-- x86_64 Linux，`ixgbe` 已绑定两个 X553 功能（`05:00.0`、`05:00.1`）
-- 运行内核的头文件和编译工具链
-- `enp5s0f0` / `enp5s0f1` 在你的机器上可能不同 —— 改模块源码里的
-  `dev_get_by_name` 和启动脚本里的 `V150_CPU_IF`
-- 其它什么都不需要。不需要 `mv88e6xxx`、不需要 DSA、不需要 switchdev
+上面三步跑通了就不用读这一节。这里是要点补充和手动安装路径。
 
----
-
-## 安装
-
-### 一键安装（推荐）
-
-```sh
-git clone https://github.com/FusionPlmH/att-v150-ia3000-linux-netdrive
-cd att-v150-ia3000-linux-netdrive
-sudo ./install.sh
-```
-
-或者不克隆，直接跑：
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/FusionPlmH/att-v150-ia3000-linux-netdrive/main/get.sh | sudo bash
-```
-
-`install.sh` 会自动完成这些事：
-
-| 步骤 | 说明 |
-|---|---|
-| 识别发行版 | Proxmox VE / Debian / VyOS |
-| 检查内核头文件 | 缺的话尝试 `pve-headers-$(uname -r)` / `linux-headers-$(uname -r)` |
-| **自动识别两个 X553 上行** | 按 PCI 设备 ID `8086:15c2` 找，按功能号判断哪个是 switch port 9 / 10 |
-| 编译模块 | 直接编译，或 `--dkms` 走 DKMS |
-| 安装模块 + modprobe 配置 | `/lib/modules/$(uname -r)/extra/`、`/etc/modprobe.d/v150_mdio.conf` |
-| 装载并验证芯片 | 读 `0x0a01` 确认是 88E6190X |
-| 安装 bring-up 与服务 | `/usr/local/sbin/`、`/etc/systemd/system/`，开机自启 |
-| 创建主机侧 VLAN 接口 | `enp5s0f1.1` … `enp5s0f0.8`，**只建不配地址** |
-
-常用选项：
-
-```sh
-sudo ./install.sh --dry-run            # 只打印计划，不动系统
-sudo ./install.sh --no-vlans           # 完全不碰主机网络
-sudo ./install.sh --cpu-if0 enp1s0f0 --cpu-if1 enp1s0f1   # 手动指定网口
-sudo ./install.sh --dkms               # 用 DKMS 安装（内核升级后自动重建）
-sudo ./install.sh --ko /path/v150_mdio.ko                 # 用预编译模块
-sudo ./install.sh --uninstall          # 全部卸掉
-```
+**除了内核头文件和编译工具链，什么依赖都没有** —— 不需要 `mv88e6xxx`、
+不需要 DSA、不需要 switchdev。
 
 ### 手动安装
 
@@ -218,14 +342,17 @@ systemctl daemon-reload
 systemctl enable --now v150-switch.service
 ```
 
-### 检查状态
+### 检查状态细节
 
-```sh
-sudo ./scripts/v150-status.sh
-```
+`sudo v150-status.sh` 输出的每一段：
 
-会打印模块参数、芯片 ID、两个上行的 carrier/speed、10 个 switch port 的
-链路/速率/CMODE/PVID，以及主机侧 8 个 VLAN 接口的状态。
+| 段 | 看什么 |
+|---|---|
+| `module` | `/proc/v150_mdio` 在不在、模块用的哪个 netdev、芯片 ID 对不对 |
+| `uplinks` | 两个 X553 的 carrier 和速率 —— 必须是 1000 |
+| `switch ports` | 10 个口的 LNK/SPEED/CMODE/PVID |
+| `host VLAN interfaces` | 8 个子接口在不在、有没有配地址 |
+| `service` | systemd 单元 active/enabled |
 
 ### 网口名从哪来
 
@@ -248,7 +375,7 @@ V150_CPU_IF1=enp5s0f1     # switch port  9
 临时试别的名字：
 
 ```sh
-sudo V150_CPU_IF0=eno1 V150_CPU_IF1=eno2 ./scripts/v150-status.sh
+sudo V150_CPU_IF0=eno1 V150_CPU_IF1=eno2 v150-status.sh
 ```
 
 > 内置默认 `enp5s0f0` / `enp5s0f1` 对应 PCI `05:00.0` / `05:00.1`。
@@ -447,7 +574,68 @@ SerDes 上电状态是 **保持** 的：拔掉模块 `LINK` 会掉，但 `CMODE`
 
 ---
 
+## 装不上怎么办
+
+### `chip id` 读不出来 / 不是 `0x0a01`
+
+```
+   ! could not read the chip id over the indirect SMI protocol
+```
+
+按顺序查：
+
+1. `ls -l /proc/v150_mdio` —— 模块加载了吗？
+2. `dmesg | grep v150` —— 模块报错说找不到 `ixgbe-mdio` 吗？
+3. `ip -br link | grep -E 'enp|eth'` —— 两个 X553 网口叫什么名字？
+4. 名字不是 `enp5s0f0`/`enp5s0f1` 的话：`sudo ./install.sh --cpu-if0 <名> --cpu-if1 <名>`
+
+### `no X553 Backplane (8086:15c2) netdev found`
+
+`lspci -nn | grep 15c2` 有但 `ip link` 里没有 → 驱动没绑上：
+
+```sh
+lspci -nnk -s 05:00.0        # 看 "Kernel driver in use:"
+modprobe ixgbe
+```
+
+### `no kernel build tree at /lib/modules/.../build`
+
+缺内核头文件：
+
+```sh
+apt install pve-headers-$(uname -r)      # PVE
+apt install linux-headers-$(uname -r)    # Debian
+```
+
+PVE 上如果 `pve-headers` 装不上，先 `apt update && apt full-upgrade` 对齐版本。
+
+### 装完网络断了
+
+`install.sh` 只创建 VLAN 子接口，**不配 IP、不改路由**，理论上碰不到管理网络。
+如果真断了：
+
+```sh
+# 现场恢复（不用重启）
+sudo v150-vlans.sh delete
+sudo systemctl stop v150-switch
+
+# 或者直接拔掉重来
+sudo ./install.sh --uninstall
+```
+
+### `install -m644` 装出 0 字节的 .ko
+
+极少数文件系统上 `install` 会出问题。用 `--ko` 手工指定：
+
+```sh
+make && sudo ./install.sh --ko ./kernel/v150_mdio.ko
+```
+
+---
+
 ## 排错
+
+> 这一段是**装好之后**跑起来的问题。装都装不上的看上一节。
 
 ### 链路 up，但数据不通
 

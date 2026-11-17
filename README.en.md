@@ -14,23 +14,197 @@ programs the switch through it. Forwarding happens entirely in silicon.
 
 ---
 
-## Table of contents
+## What you end up with
 
-- [Why not DSA](#why-not-dsa)
-- [Hardware](#hardware)
-- [How it works](#how-it-works)
-- [Requirements](#requirements)
-- [Install](#install)
-- [Port map](#port-map)
-- [VLAN layout](#vlan-layout)
-- [The five things you must get right](#the-five-things-you-must-get-right)
-- [SFP cages need explicit SerDes power-up](#sfp-cages-need-explicit-serdes-power-up)
-- [Measured results](#measured-results)
-- [Troubleshooting](#troubleshooting)
-- [Known limitations](#known-limitations)
-- [Repository layout](#repository-layout)
-- [References](#references)
-- [License](#license)
+All eight front-panel ports working, each on its own VLAN sub-interface:
+
+```
+$ sudo v150-status.sh
+----- module -----
+  /proc/v150_mdio       present
+  switch id             0x0a01  88E6190X rev 1 ok     <- chip is reachable
+
+----- uplinks -----
+  enp5s0f0     switch port 10   carrier=1 speed=1000
+  enp5s0f1     switch port  9   carrier=1 speed=1000
+
+----- switch ports -----
+  PORT   LNK  SPEED  CMODE  PVID
+  1      0    -      0xf    4      <- panel 4, nothing plugged in
+  3      1    1G     0x9    1      <- panel 1, SFP module present
+  9      1    1G     0x9    100    <- CPU uplink
+  ...
+```
+
+Put an IP on `enp5s0f1.3` and panel 3 is usable. The eight ports are isolated
+from each other by default (one VLAN each).
+
+---
+
+## Step 0: check the machine matches
+
+**This repository works on exactly one machine.** Spend 30 seconds confirming
+that — every port mapping and register timing below was measured on this board.
+
+```sh
+lspci -nn | grep -i 15c2
+```
+
+You must see **two** `8086:15c2` (X553 Backplane):
+
+```
+05:00.0 Ethernet controller: Intel Corporation Ethernet Connection X553 Backplane [8086:15c2]
+05:00.1 Ethernet controller: Intel Corporation Ethernet Connection X553 Backplane [8086:15c2]
+```
+
+```sh
+cat /sys/class/dmi/id/product_name
+```
+
+Should print `80500-0150-G02` (Silicom IA3000 / AT&T ATT-V150).
+
+**You also need:**
+
+| Item | Requirement | Check it |
+|---|---|---|
+| OS | x86_64, Debian 12+ or Proxmox VE 8/9 | `cat /etc/os-release` |
+| Kernel headers | matching the running kernel | `test -e /lib/modules/$(uname -r)/build && echo ok` |
+| Privileges | root | `id -u` prints `0` |
+| Management link | **must not** go through the eight ports being taken over | — |
+
+Missing headers:
+
+```sh
+apt install pve-headers-$(uname -r)      # Proxmox VE
+apt install linux-headers-$(uname -r)    # Debian
+```
+
+On VyOS use [vyos/setup.sh](#vyos), not `install.sh`.
+
+---
+
+## Three steps
+
+### Step 1: install
+
+```sh
+git clone https://github.com/FusionPlmH/att-v150-ia3000-linux-netdrive
+cd att-v150-ia3000-linux-netdrive
+sudo ./install.sh
+```
+
+Without cloning:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/FusionPlmH/att-v150-ia3000-linux-netdrive/main/get.sh | sudo bash
+```
+
+Add `--dry-run` to see the plan first.
+
+**What it does:**
+
+| Step | Detail |
+|---|---|
+| Detect the distribution | Proxmox VE / Debian / VyOS |
+| Check kernel headers | tries `pve-headers-$(uname -r)` / `linux-headers-$(uname -r)` |
+| **Auto-detect both X553 uplinks** | by PCI device ID `8086:15c2`, then decides which function is switch port 9 vs 10 |
+| Build the module | direct build, or DKMS with `--dkms` |
+| Install module + modprobe options | `/lib/modules/$(uname -r)/extra/`, `/etc/modprobe.d/v150_mdio.conf` |
+| Load and verify the chip | reads back `0x0a01` to confirm it is an 88E6190X |
+| Install bring-up + service | `/usr/local/sbin/`, `/etc/systemd/system/`, enabled at boot |
+| Create host VLAN interfaces | `enp5s0f1.1` … `enp5s0f0.8`, **created and brought up, never addressed** |
+
+**At the end you should see** (last few lines):
+
+```
+   + systemctl restart v150-switch.service
+● v150-switch.service
+     Active: active (exited)
+```
+
+and earlier, `chip id` must read `0x0a01  (88E6190X) OK`.
+**If the chip ID cannot be read** the module never reached MDIO — see
+[If the install fails](#if-the-install-fails).
+
+### Step 2: confirm the eight ports
+
+```sh
+sudo v150-status.sh
+```
+
+In the `switch ports` table the eight front-panel ports must have `PVID` = `1`..`8`
+(panel number = VLAN):
+
+```
+  PORT   LNK  SPEED  CMODE  PVID
+  1      0    -      0xf    4      <- panel 4
+  2      0    -      0xf    3      <- panel 3
+  3      1    1G     0x9    1      <- panel 1 (SFP)
+  4      0    -      0xf    2      <- panel 2 (SFP)
+```
+
+`LNK=0` is not an error — it just means nothing is plugged in. Panels 1/2 are
+SFP, and `CMODE=0xf` is normal when no module is inserted.
+
+### Step 3: plug a cable in
+
+Plug a cable into **panel 3** (copper) with a peer machine on the other end:
+
+```sh
+# panel 3 -> VLAN 3 -> enp5s0f1.3  (see "Port map")
+sudo ip addr add 192.168.50.1/24 dev enp5s0f1.3
+sudo ip link set enp5s0f1.3 up
+
+# peer runs 192.168.50.2/24, then
+ping -c 3 192.168.50.2
+```
+
+**If that pings, you are done** — panel → switch → VLAN → uplink → host, the whole
+path. Same for any other panel; the VLAN id is the panel number.
+
+**Not sure which panel the cable went into?** You can tell without any IP:
+
+```sh
+for i in enp5s0f1.{1,3,4,5} enp5s0f0.{2,6,7,8}; do
+  printf '%-16s %s\n' "$i" "$(cat /sys/class/net/$i/statistics/rx_packets 2>/dev/null || echo -)"
+done
+sleep 8
+# run it again - whichever counter moved is the panel you used
+```
+
+(In the repo directory, `sudo ./tools/vlan_mon.sh 8` does this for you and
+highlights the active interface.)
+
+> Do **not** use `tcpdump -i enp5s0f0` to look for VLAN tags — `ixgbe` strips
+> the tag into the descriptor and you will never see it. Watch the VLAN
+> sub-interface's `rx_packets` instead.
+
+---
+
+## After the install
+
+Three commands are on PATH:
+
+| Command | Purpose |
+|---|---|
+| `sudo v150-status.sh` | read-only health report, safe to run any time |
+| `sudo v150-vlans.sh create\|delete\|show` | create / delete / inspect the eight host VLAN sub-interfaces |
+| `sudo v150-switch-bringup.sh` | re-program the switch (systemd runs this at boot) |
+
+Configuration lives in `/etc/default/v150-switch`. If a kernel upgrade renames
+the interfaces, just re-run `sudo ./install.sh`.
+
+Uninstall: `sudo ./install.sh --uninstall` (keeps `/etc/default/v150-switch`).
+
+---
+
+## More documentation
+
+| Document | Read it when |
+|---|---|
+| [docs/REGISTER-REFERENCE.md](docs/REGISTER-REFERENCE.md) | you need the 88E6190X register / bit-field reference (bilingual) |
+| [docs/TECHNICAL-NOTES.md](docs/TECHNICAL-NOTES.md) | you want the dead ends and why they were dead ends (bilingual) |
+| "Why not DSA" / "How it works" below | you intend to change the code or port it to another board |
 
 ---
 
@@ -157,55 +331,12 @@ This avoids writing an I2C/GPIO bit-banger and avoids touching PCI BARs.
 
 ---
 
-## Requirements
+## Install details
 
-- x86_64 Linux with `ixgbe` bound to the two X553 functions (`05:00.0`, `05:00.1`)
-- Kernel headers + build toolchain for the running kernel
-- `enp5s0f0` / `enp5s0f1` names may differ on your system — adjust the module
-  source (`dev_get_by_name`) and `V150_CPU_IF` in the bring-up script
-- Nothing else. No `mv88e6xxx`, no DSA, no switchdev
+You do not need this section if the three steps above worked.
 
----
-
-## Install
-
-### One-shot
-
-```sh
-git clone https://github.com/FusionPlmH/att-v150-ia3000-linux-netdrive
-cd att-v150-ia3000-linux-netdrive
-sudo ./install.sh
-```
-
-Or without cloning:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/FusionPlmH/att-v150-ia3000-linux-netdrive/main/get.sh | sudo bash
-```
-
-`install.sh` does all of this:
-
-| Step | Detail |
-|---|---|
-| Detect the distribution | Proxmox VE / Debian / VyOS |
-| Check kernel headers | tries `pve-headers-$(uname -r)` / `linux-headers-$(uname -r)` |
-| **Auto-detect both X553 uplinks** | by PCI device ID `8086:15c2`, then decides which function is switch port 9 vs 10 |
-| Build the module | direct build, or DKMS with `--dkms` |
-| Install module + modprobe options | `/lib/modules/$(uname -r)/extra/`, `/etc/modprobe.d/v150_mdio.conf` |
-| Load and verify the chip | reads back `0x0a01` to confirm it is an 88E6190X |
-| Install bring-up + service | `/usr/local/sbin/`, `/etc/systemd/system/`, enabled at boot |
-| Create host VLAN interfaces | `enp5s0f1.1` … `enp5s0f0.8`, **created and brought up, never addressed** |
-
-Options:
-
-```sh
-sudo ./install.sh --dry-run            # print the plan, change nothing
-sudo ./install.sh --no-vlans           # do not touch host networking at all
-sudo ./install.sh --cpu-if0 enp1s0f0 --cpu-if1 enp1s0f1   # explicit netdevs
-sudo ./install.sh --dkms               # install through DKMS
-sudo ./install.sh --ko /path/v150_mdio.ko                 # prebuilt module
-sudo ./install.sh --uninstall          # remove everything
-```
+**There are no dependencies beyond kernel headers and a toolchain** — no
+`mv88e6xxx`, no DSA, no switchdev.
 
 ### Manual
 
@@ -218,19 +349,25 @@ ls -l /proc/v150_mdio
 
 # 2. install and run the bring-up
 install -m755 scripts/v150-switch-bringup.sh /usr/local/sbin/
+install -m755 scripts/v150-status.sh         /usr/local/sbin/
+install -m755 scripts/v150-vlans.sh          /usr/local/sbin/
+install -m644 scripts/v150_sw.sh             /usr/local/lib/v150/
 install -m644 systemd/v150-switch.service    /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now v150-switch.service
 ```
 
-### Status
+### What the status report shows
 
-```sh
-sudo ./scripts/v150-status.sh
-```
+`sudo v150-status.sh` prints five sections:
 
-Prints the module parameter, chip ID, uplink carrier/speed, all ten switch ports
-(link, speed, CMODE, PVID) and the state of the eight host VLAN interfaces.
+| Section | What to look at |
+|---|---|
+| `module` | is `/proc/v150_mdio` present, which netdev the module bound to, is the chip ID right |
+| `uplinks` | carrier and speed of both X553 — must be 1000 |
+| `switch ports` | LNK / SPEED / CMODE / PVID of all ten ports |
+| `host VLAN interfaces` | are the eight sub-interfaces there, do they have addresses |
+| `service` | is the systemd unit active / enabled |
 
 ### Where the netdev names come from
 
@@ -458,7 +595,73 @@ VLAN interfaces receive exactly zero.
 
 ---
 
+---
+
+## If the install fails
+
+### `chip id` cannot be read / is not `0x0a01`
+
+```
+   ! could not read the chip id over the indirect SMI protocol
+```
+
+Check in this order:
+
+1. `ls -l /proc/v150_mdio` — did the module load?
+2. `dmesg | grep v150` — does the module complain it cannot find `ixgbe-mdio`?
+3. `ip -br link | grep -E 'enp|eth'` — what are the two X553 interfaces called?
+4. If the names are not `enp5s0f0`/`enp5s0f1`: `sudo ./install.sh --cpu-if0 <n> --cpu-if1 <m>`
+
+### `no X553 Backplane (8086:15c2) netdev found`
+
+`lspci -nn | grep 15c2` shows them but `ip link` does not — the driver is not bound:
+
+```sh
+lspci -nnk -s 05:00.0        # look at "Kernel driver in use:"
+modprobe ixgbe
+```
+
+### `no kernel build tree at /lib/modules/.../build`
+
+Kernel headers are missing:
+
+```sh
+apt install pve-headers-$(uname -r)      # PVE
+apt install linux-headers-$(uname -r)    # Debian
+```
+
+On PVE, if `pve-headers` will not install, align the versions with
+`apt update && apt full-upgrade` first.
+
+### Networking died right after the install
+
+`install.sh` only creates VLAN sub-interfaces. It assigns no addresses and
+changes no routes, so it should not be able to break management access. If it
+did:
+
+```sh
+# recover in place, no reboot needed
+sudo v150-vlans.sh delete
+sudo systemctl stop v150-switch
+
+# or start over
+sudo ./install.sh --uninstall
+```
+
+### `install -m644` produced a zero-byte .ko
+
+Rare, but on some filesystems `install` misbehaves. Pass the module explicitly:
+
+```sh
+make && sudo ./install.sh --ko ./kernel/v150_mdio.ko
+```
+
+---
+
 ## Troubleshooting
+
+> This section is about problems **after** a successful install. If you cannot
+> install at all, see the previous section.
 
 ### Link is up but no traffic passes
 

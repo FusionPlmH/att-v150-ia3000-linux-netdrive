@@ -21,6 +21,8 @@ HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 
 BINDIR=/usr/local/sbin
 SCRIPT="$BINDIR/v150-switch-bringup.sh"
+STATUS="$BINDIR/v150-status.sh"
+VLANS="$BINDIR/v150-vlans.sh"
 LIBDIR=/usr/local/lib/v150
 UNIT=/etc/systemd/system/v150-switch.service
 ENVFILE=/etc/default/v150-switch
@@ -76,6 +78,11 @@ att-v150-ia3000-linux-netdrive installer
 
 Detected automatically: distribution, kernel headers, the two X553 uplink
 netdevs and which of them is switch port 9 vs 10.
+
+After installing, these are on PATH:
+  v150-switch-bringup.sh   re-program the switch (systemd runs this at boot)
+  v150-status.sh           read-only health report
+  v150-vlans.sh create|delete|show   host-side VLAN sub-interfaces
 
 VyOS users: use vyos/setup.sh instead. VyOS rewrites /usr and /etc on upgrade,
 so the unit, the module and the VLAN config all have to live under /config.
@@ -302,6 +309,8 @@ install_bringup() {
 	step "installing bring-up script, library and unit"
 	run install -d "$BINDIR"
 	run install -m 0755 "$HERE/scripts/v150-switch-bringup.sh" "$SCRIPT"
+	run install -m 0755 "$HERE/scripts/v150-status.sh" "$STATUS"
+	run install -m 0755 "$HERE/scripts/v150-vlans.sh" "$VLANS"
 	run install -m 0644 "$HERE/scripts/v150_sw.sh" "$LIBDIR/v150_sw.sh"
 	run install -m 0644 "$HERE/systemd/v150-switch.service" "$UNIT"
 	run install -d "$DOCDIR"
@@ -368,7 +377,7 @@ do_uninstall() {
 	fi
 
 	step "removing files"
-	run rm -f "$SCRIPT" "$MODCONF" "$LOADCONF"
+	run rm -f "$SCRIPT" "$STATUS" "$VLANS" "$MODCONF" "$LOADCONF"
 	run rm -rf "$DOCDIR" "$LIBDIR"
 
 	say ""
@@ -437,7 +446,8 @@ Give them addresses, bridge them, or pass them into VMs:
 
   ip addr add 192.168.50.1/24 dev $CPU_IF0.8
 
-Re-run any time:   systemctl restart v150-switch
-Status:            $HERE/scripts/v150-status.sh
+Status:            v150-status.sh
+Re-create VLANs:   v150-vlans.sh create
+Re-program switch: systemctl restart v150-switch
 Remove everything: sudo ./install.sh --uninstall
 EOF
