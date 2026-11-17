@@ -12,6 +12,10 @@ programs the switch through it. Forwarding happens entirely in silicon.
 
 > Status: all 8 front-panel ports work, each on its own VLAN, at full 1 GbE line rate.
 
+> **Just want the ports working?** Start with
+> [Step 0: check the machine matches](#step-0-check-the-machine-matches), then jump
+> straight to [Three steps](#three-steps). Everything in between is background.
+
 ---
 
 ## What you end up with
