@@ -1,0 +1,2 @@
+# 仓库里统一存 LF —— 脚本要能在 Linux/VyOS 上直接跑。
+* text=auto eol=lf
