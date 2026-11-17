@@ -4,6 +4,10 @@
 #   sudo ./vyos/setup.sh                  install + run now
 #   sudo ./vyos/setup.sh --dry-run        print the plan only
 #   sudo ./vyos/setup.sh --ko /path.ko    use a prebuilt v150_mdio.ko
+#   sudo ./vyos/setup.sh --cpu-if0 eth0 --cpu-if1 eth1
+#                                         skip the PCI detection and name the
+#                                         two uplinks yourself (VyOS renames
+#                                         them to ethN, so detection is best-effort)
 #
 # Why this is not the same as install.sh
 # --------------------------------------
@@ -36,15 +40,19 @@ MODDIR="/lib/modules/$(uname -r)/extra"
 
 DRY=0
 PREBUILT_KO=""
+V150_CPU_IF0=""
+V150_CPU_IF1=""
 
-for arg in "$@"; do
-	case "$arg" in
+while [ $# -gt 0 ]; do
+	case "$1" in
 	--dry-run) DRY=1 ;;
-	--ko) shift; PREBUILT_KO=${1:-} ;;
+	--ko)      PREBUILT_KO=${2:?--ko needs a path}; shift ;;
+	--cpu-if0) V150_CPU_IF0=${2:?--cpu-if0 needs a name}; shift ;;
+	--cpu-if1) V150_CPU_IF1=${2:?--cpu-if1 needs a name}; shift ;;
 	-h | --help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
-	*) echo "unknown option: $arg  (try --help)" >&2; exit 1 ;;
+	*) echo "unknown option: $1  (try --help)" >&2; exit 1 ;;
 	esac
-	shift 2>/dev/null || true
+	shift
 done
 
 [ "$(id -u)" -eq 0 ] || { echo "run as root" >&2; exit 1; }
@@ -56,10 +64,65 @@ done
 say() { printf '%s\n' "$*"; }
 step() { printf '\n== %s\n' "$*"; }
 
+# VyOS renames the X553 functions to eth0/eth1/... following config order, so the
+# enp5s0fN names from a plain Debian install are useless here. Find them by PCI
+# ID, exactly like install.sh does.
+detect_x553() {
+	local devs="" d nd
+	for d in /sys/bus/pci/devices/*; do
+		[ -r "$d/vendor" ] || continue
+		[ "$(cat "$d/vendor")" = "0x8086" ] || continue
+		[ "$(cat "$d/device" 2>/dev/null)" = "0x15c2" ] || continue
+		for nd in "$d"/net/*; do
+			[ -e "$nd" ] || continue
+			devs="$devs $(basename "$nd"):$(basename "$d")"
+		done
+	done
+
+	if [ -z "$devs" ]; then
+		say "!! no X553 Backplane (8086:15c2) netdev found"
+		say "   check: lspci -nn | grep 15c2   and   ip -br link"
+		return 1
+	fi
+
+	say "X553 uplinks found:"
+	for e in $devs; do say "   ${e%%:*}  (${e##*:})"; done
+
+	local sorted
+	sorted=$(for e in $devs; do
+		printf '%s %s\n' "${e##*.}" "${e%%:*}"
+	done | sort -n | awk '{print $2}')
+
+	V150_CPU_IF0=$(printf '%s\n' "$sorted" | sed -n 1p)
+	V150_CPU_IF1=$(printf '%s\n' "$sorted" | sed -n 2p)
+	[ -n "$V150_CPU_IF1" ] || {
+		say "!! only one X553 function; switch port 9 may be unwired"
+		V150_CPU_IF1=$V150_CPU_IF0
+	}
+	say "   switch port 10 -> $V150_CPU_IF0"
+	say "   switch port  9 -> $V150_CPU_IF1"
+	return 0
+}
+
 # ---------------------------------------------------------------------------
 step "environment"
 say "kernel    : $(uname -r)"
 say "destination: $DEST"
+
+# ---------------------------------------------------------------------------
+step "locating the two X553 uplinks"
+# --cpu-if0 / --cpu-if1 win; otherwise detect by PCI ID.
+if [ -n "$V150_CPU_IF0" ] && [ -n "$V150_CPU_IF1" ]; then
+	say "using --cpu-if0 $V150_CPU_IF0  --cpu-if1 $V150_CPU_IF1"
+elif [ -n "$V150_CPU_IF0" ] || [ -n "$V150_CPU_IF1" ]; then
+	echo "give both --cpu-if0 and --cpu-if1, or neither" >&2
+	exit 1
+else
+	detect_x553 || {
+		echo "pass --cpu-if0/--cpu-if1 explicitly, or check lspci -nn | grep 15c2" >&2
+		exit 1
+	}
+fi
 
 # ---------------------------------------------------------------------------
 step "locating v150_mdio.ko"
@@ -161,8 +224,8 @@ else
 
 	# tell the bring-up which netdevs are the uplinks
 	{
-		echo "V150_CPU_IF0=${V150_CPU_IF0:-enp5s0f0}"
-		echo "V150_CPU_IF1=${V150_CPU_IF1:-enp5s0f1}"
+		echo "V150_CPU_IF0=$V150_CPU_IF0"
+		echo "V150_CPU_IF1=$V150_CPU_IF1"
 	} > "$DEST/env"
 	# shellcheck disable=SC1091
 	. "$DEST/env"
@@ -175,7 +238,7 @@ fi
 step "kernel-name to VyOS-interface mapping"
 
 if [ "$DRY" -eq 0 ]; then
-	for i in ${V150_CPU_IF0:-enp5s0f0} ${V150_CPU_IF1:-enp5s0f1}; do
+	for i in $V150_CPU_IF0 $V150_CPU_IF1; do
 		[ -e "/sys/class/net/$i" ] || continue
 		printf '  %-14s %s  carrier=%s\n' "$i" \
 			"$(readlink -f /sys/class/net/$i/device 2>/dev/null | xargs basename 2>/dev/null)" \
@@ -201,8 +264,8 @@ Switch ports 9 and 10 are the two uplinks. Front-panel ports are vifs:
   commit
   save
 
-Panels 1/3/4/5 are on ${V150_CPU_IF1:-enp5s0f1} (switch port 9).
-Panels 2/6/7/8 are on ${V150_CPU_IF0:-enp5s0f0} (switch port 10).
+Panels 1/3/4/5 are on ${V150_CPU_IF1} (switch port 9).
+Panels 2/6/7/8 are on ${V150_CPU_IF0} (switch port 10).
 
 Never address the uplink interface itself — it carries tagged traffic only.
 

@@ -107,14 +107,16 @@ for v in 1 2 3 4 5 6 7 8; do
 			"$(ip -br addr show "$iface" 2>/dev/null | awk '{print $3}')"
 	fi
 done
-[ "$found" -eq 1 ] || echo "  none (run scripts/v150-vlans.sh create)"
+[ "$found" -eq 1 ] || echo "  none (run: v150-vlans.sh create)"
 
 # --- service --------------------------------------------------------------
+hr "service"
 if command -v systemctl >/dev/null 2>&1; then
-	hr "service"
 	printf '  v150-switch.service   %s / %s\n' \
 		"$(systemctl is-active v150-switch 2>/dev/null || echo -)" \
 		"$(systemctl is-enabled v150-switch 2>/dev/null || echo -)"
+else
+	echo "  no systemd here — run v150-switch-bringup.sh by hand"
 fi
 
 echo

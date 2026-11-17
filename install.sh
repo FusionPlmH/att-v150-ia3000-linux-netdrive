@@ -307,7 +307,7 @@ load_module() {
 
 install_bringup() {
 	step "installing bring-up script, library and unit"
-	run install -d "$BINDIR"
+	run install -d "$BINDIR" "$LIBDIR"
 	run install -m 0755 "$HERE/scripts/v150-switch-bringup.sh" "$SCRIPT"
 	run install -m 0755 "$HERE/scripts/v150-status.sh" "$STATUS"
 	run install -m 0755 "$HERE/scripts/v150-vlans.sh" "$VLANS"

@@ -38,7 +38,7 @@ for v in 1 2 3 4 5 6 7 8; do
 	echo "$i $p $b" >> "$TMP"
 done
 
-[ -s "$TMP" ] || { echo "没有 VLAN 接口，先跑 scripts/v150-vlans.sh create" >&2; exit 1; }
+[ -s "$TMP" ] || { echo "没有 VLAN 接口，先跑 v150-vlans.sh create" >&2; exit 1; }
 
 sleep "$SECS"
 
